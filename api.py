@@ -1,11 +1,18 @@
 from typing import Union
-from fastapi import FastAPI
+from fastapi import FastAPI, Query, Request
+from typing import List, Optional
 from fastapi.responses import FileResponse, JSONResponse
 import os
 import datetime
 import platform
-import csv
+import time
+import psycopg2
 import json
+import sys
+import csv
+from pydantic import BaseModel
+
+csv.field_size_limit(10**6)
 
 app = FastAPI()
 
@@ -14,6 +21,31 @@ if platform.system() == "Windows":
 else:
     output_dir = '/home/mb/processed_data/'
 
+f = open('db_config.json')
+db_params = json.load(f)
+f.close()
+
+conn = 0
+cur = 0
+
+def connect_to_db():
+    global conn, cur
+    try:
+        cur.close()
+        conn.close()
+    except:
+        pass
+    finally:
+        while True:
+            try:
+                conn = psycopg2.connect(**db_params)
+                break
+            except:
+                time.sleep(1)
+
+        cur = conn.cursor()
+
+#connect_to_db()
 
 def get_latest_dir(arg, previous=True):
     list_dir = os.listdir(output_dir)
@@ -50,7 +82,7 @@ def get_latest_file(arg):
     list_files = os.listdir(latest_dir)
     if not(list_files):
         return "This file doesn't exist"
-    #print('list_files = ', list_files)
+    print('list_files = ', list_files)
     file_times = []
     for f in list_files:
         ddl =  [s for s in f if s.isdigit()]
@@ -61,7 +93,7 @@ def get_latest_file(arg):
             )
         file_times.append(f_time)
     latest_file = list_files[file_times.index(max(file_times))]
-            
+    print('llatest_files = ', latest_file)
     return os.path.join(latest_dir, latest_file)
 
 def csv_to_json(csvFilePath, arr=False):
@@ -72,9 +104,16 @@ def csv_to_json(csvFilePath, arr=False):
         else:
             csvReader = csv.DictReader(csvf)
         for row in csvReader:
+            #print(row)
+            #break
             data.append(row)
     return data
 
+def get_file_content(json_file):
+    f = open(json_file)
+    data = json.load(f)
+    f.close()
+    return data
 
 @app.get("/changes")
 def get_t(file_name='changes.json'):
@@ -105,6 +144,17 @@ def get_t(arg='f'):
 def get_f(arg='f'):
     return JSONResponse(csv_to_json(get_latest_file(arg)))
 
+@app.get("/f/waypoint_file/{id}")
+def get_w_id(id: str):
+    cur.execute(f"SELECT * FROM waypoint_file WHERE fix_id='{id}';")
+    for _ in range(2):
+        try:
+            rows = cur.fetchall()
+            break
+        except:
+            connect_to_db()
+    return rows
+
 
 @app.get("/o")
 def get_t(arg='o'):
@@ -128,6 +178,17 @@ def get_d(arg='d'):
     #return FileResponse(get_latest_file(arg))
     return JSONResponse(csv_to_json(get_latest_file(arg)))
 
+@app.get("/d/daily_obstacle_file/{id}")
+def get_w_id(id: str):
+    cur.execute(f"SELECT * FROM daily_obstacle_file WHERE city='{id}';")
+    for _ in range(2):
+        try:
+            rows = cur.fetchall()
+            break
+        except:
+            connect_to_db()
+    return rows
+
 
 @app.get("/w")
 def get_t(arg='w'):
@@ -135,9 +196,26 @@ def get_t(arg='w'):
     list_files = os.listdir(list_dir)
     return JSONResponse(content=list_files)
 
+
 @app.get("/w/wx_file")
-def get_w(arg='w'):
-    return JSONResponse(csv_to_json(get_latest_file(arg)))
+def get_station_data(request: Request):
+    try:
+        params = dict(request.query_params)
+        if params:
+            station_id = list(params.values())
+            station_id = list([s.upper() for s in station_id])
+
+            connect_to_db()
+
+            query = f"SELECT * FROM wx_file WHERE station_id = ANY(%s)"
+            cur.execute(query, (station_id,))
+            rows = cur.fetchall()
+            return rows
+        else:
+            return JSONResponse(csv_to_json(get_latest_file('w')))
+    except Exception as e:
+        return str(e)
+
 
 
 @app.get("/t")
@@ -149,27 +227,56 @@ def get_t(arg='t'):
 
 @app.get("/t/{file_name}")
 def get_t(file_name: str, arg='t'):
+    #return JSONResponse(csv_to_json(get_latest_file(arg)))
     list_dir = get_latest_dir(arg)
     list_files = os.listdir(list_dir)
     #print(list_dir)
     if file_name in list_files:
-        return FileResponse(os.path.join(list_dir, file_name))
+        return JSONResponse(csv_to_json(os.path.join(list_dir, file_name)))
+        #return JSONResponse(get_file_content(os.path.join(list_dir, file_name)))
     else:
         return 'This file does not exist'
 
 
-@app.get("/s")
-def get_t(arg='s'):
+@app.get("/c")
+def get_t(arg='c'):
     list_dir = get_latest_dir(arg)
     list_files = os.listdir(list_dir)
     return JSONResponse(content=list_files)
 
 
-@app.get("/s/shape_files.zip")
-def get_s(arg='s'):
+@app.get("/c/{file_name}")
+def get_s(file_name: str, arg='c'):
     list_dir = get_latest_dir(arg)
     list_files = os.listdir(list_dir)
-    return FileResponse(list_files[0])
+    #print(list_dir)
+    if file_name in list_files:
+        return JSONResponse(csv_to_json(os.path.join(list_dir, file_name)))
+        #return JSONResponse(get_file_content(os.path.join(list_dir, file_name)))
+    else:
+        return 'This file does not exist'
+    
+@app.get("/e")
+def get_t(arg='e'):
+    list_dir = get_latest_dir(arg)
+    list_files = os.listdir(list_dir)
+    return JSONResponse(content=list_files)
+
+
+@app.get("/e/sua")
+def get_s(arg='e'):
+    return JSONResponse(csv_to_json(get_latest_file(arg)))
+    
+@app.get("/g")
+def get_t(arg='g'):
+    list_dir = get_latest_dir(arg)
+    list_files = os.listdir(list_dir)
+    return JSONResponse(content=list_files)
+
+
+@app.get("/g/stadium")
+def get_s(arg='g'):
+    return JSONResponse(csv_to_json(get_latest_file(arg)))
 
 
 @app.get("/a")
@@ -217,6 +324,18 @@ def get_t(arg='n'):
 def get_b(arg='n'):
     return JSONResponse(csv_to_json(get_latest_file(arg)))
 
+@app.get("/n/nav/{id}")
+def get_w_id(id: str):
+    cur.execute(f"SELECT * FROM nav WHERE nav_id='{id}';")
+    for _ in range(2):
+        try:
+            rows = cur.fetchall()
+            break
+        except:
+            connect_to_db()
+    return rows
+
+
 
 @app.get("/r")
 def get_t(arg='r'):
@@ -227,3 +346,14 @@ def get_t(arg='r'):
 @app.get("/r/RWY_END")
 def get_b(arg='r'):
     return JSONResponse(csv_to_json(get_latest_file(arg)))
+
+@app.get("/r/RWY_END/{id}")
+def get_w_id(id: str):
+    cur.execute(f"SELECT * FROM RWY_END WHERE arpt_id='{id}';")
+    for _ in range(2):
+        try:
+            rows = cur.fetchall()
+            break
+        except:
+            connect_to_db()
+    return rows
